@@ -115,3 +115,10 @@ SKIP=mypy pre-commit run --all-files
 The `typing` group pins `torch==2.14.0`; the PyPI install may be newer. If mypy reports errors in code you did not change, check whether they come from that version difference before fixing them.
 
 Tests that download pretrained weights or the DINOv2 snapshot fail in such sessions; this is an environment limit, not a test failure to fix in code.
+
+**Known baseline in cloud sessions.** On upstream `487a9bb`, with PyTorch 2.15 from PyPI and no GPU, the CPU suite (`-n 4 --timeout=240`) gave 10485 passed, 469 skipped, 4 failed and 51 errors in 27.5 minutes. None of the 55 are code faults:
+
+- 53 timeouts in `tests/export/tensorrt/test_tensorrt_int8.py`, `tests/training/test_lightning_checkpoint_reload.py` and `tests/training/test_resume_optimizer_settings.py`: slow CPU. With `--timeout=1800` all 723 tests in those files pass (6.5 minutes at `-n 2`).
+- `tests/training/test_fused_adamw_ema_routing.py::TestFusedAdamWEMARouting::test_combined_checkpoint_keeps_fp32_ddp_destination_unfused` and `tests/export/tensorrt/test_tensorrt_export.py::TestPortableEngines::test_the_lean_runtime_is_not_probed_unless_version_compatible_is_asked_for[ampere_plus]`: the PyPI CUDA build of PyTorch on a machine without an NVIDIA driver.
+
+Use `--timeout=1800` for those three files. Any failure outside this list needs investigating.
