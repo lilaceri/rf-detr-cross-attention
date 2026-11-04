@@ -97,11 +97,21 @@ git checkout fusion && git merge develop
 
 ## Development Environment
 
-The cloud sessions used for this fork cannot reach `download.pytorch.org` or Hugging Face. Install PyTorch from PyPI instead of with `--torch-backend=cpu`:
+The cloud sessions used for this fork cannot reach `download.pytorch.org` or Hugging Face. Install PyTorch from PyPI instead of with `--torch-backend=cpu`. This pulls the CUDA build (it runs on CPU too) and its NVIDIA libraries, about 4 GB; the install took about 35 minutes in a cloud session.
 
 ```bash
 uv venv
 uv pip install -e ".[train,augment,cli,visual,data]" --group tests
 ```
+
+The `mypy` pre-commit hook runs `uv run --group typing`, whose PyTorch source is `download.pytorch.org`, so it cannot run in such sessions. Run the same check from the project environment instead, and run the other hooks with the hook skipped:
+
+```bash
+uv pip install "mypy==1.19.1" "numpy<2.4" types-PyYAML types-requests types-tqdm
+.venv/bin/mypy src/rfdetr/ scripts/ --no-error-summary
+SKIP=mypy pre-commit run --all-files
+```
+
+The `typing` group pins `torch==2.14.0`; the PyPI install may be newer. If mypy reports errors in code you did not change, check whether they come from that version difference before fixing them.
 
 Tests that download pretrained weights or the DINOv2 snapshot fail in such sessions; this is an environment limit, not a test failure to fix in code.
