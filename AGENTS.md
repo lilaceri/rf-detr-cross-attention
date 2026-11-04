@@ -191,6 +191,19 @@ pre-commit run --all-files
 
 ## Documentation
 
+### Documentation Required for Each Change
+
+Keep documentation in the same PR as the change. A reviewer should be able to understand what changed, why it changed, how to use it, and how to reproduce any reported result from the repository records.
+
+| Record | When to update it | What to include |
+| --- | --- | --- |
+| Changelog | Any user-visible change to behaviour, APIs, configuration, dependencies, or compatibility | Add an entry under `[Unreleased]` in `CHANGELOG.md` using the existing categories. Describe the user impact and any migration or compatibility implications. |
+| Decision log | A material choice about architecture, data preparation, dataset splits, model design, evaluation, or deployment | Add or update a dated record under `docs/decisions/`. Include the context, options considered, rationale, trade-offs, consequences, and status. Link to the PR and supporting experiments. Link superseded decisions to their replacements. |
+| Experiment log | A run used to evaluate a hypothesis or support a claim about model quality, data processing, or performance | Add or update a dated record under `docs/experiments/`. Include the hypothesis, baseline, code revision, dataset version and split, preprocessing, configuration and seeds, environment and hardware, exact run and evaluation commands, metrics and results, and conclusions with limitations. Record failed and inconclusive runs that affect the decision. Link to any supporting artifacts. |
+| User and technical docs | A change to how someone configures, runs, extends, or maintains the project | Update the relevant README, guide, examples, or API docs. Cover prerequisites, inputs and outputs, defaults, and migration steps where applicable. Keep docstrings and type hints aligned with the implementation. |
+
+Use versioned dataset and artifact references for reproducibility. Keep credentials, sensitive samples, and large run artifacts out of Git. Before opening a PR, check that commands and links are current and list the documentation records updated in the PR description. If a record does not apply, briefly explain why.
+
 ### Building Docs
 
 ```bash
@@ -384,7 +397,7 @@ result = subprocess.run(
 4. **Testing:**
     - Features and bug fixes: Follow the strict RED → GREEN → REFACTOR workflow above
     - Run: `uv run --no-sync pytest src/ tests/ scripts/ -n 2 -m "not gpu" --ignore=tests/run_smoke_all_models.py --ignore=tests/legacy/test_checkpoint_compat.py --timeout=240 --durations=50`
-5. **Quality checks:** `pre-commit run --all-files`
+5. **Quality checks:** Complete the applicable documentation records above and run `pre-commit run --all-files`
 6. **Build (if needed):** `uv build`
 7. **Commit:** Pre-commit hooks run automatically
 
