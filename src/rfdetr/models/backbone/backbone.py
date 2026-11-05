@@ -273,8 +273,20 @@ class Backbone(BackboneBase):
         return out_feats, out_masks, cross_attn_feats
 
     def get_named_param_lr_pairs(self, args: Any, prefix: str = "backbone.0") -> dict[str, dict[str, Any]]:
+        """Return the encoder parameters with their layer-wise learning rate and weight decay.
+
+        Args:
+            args: Namespace supplying ``lr_encoder``, ``lr_vit_layer_decay``, ``lr_component_decay``,
+                ``weight_decay`` and ``out_feature_indexes``.
+            prefix: This backbone's path in the model, prepended to each parameter name. Only parameters under
+                ``<prefix>.encoder`` are returned.
+
+        Returns:
+            A mapping from each trainable encoder parameter's full name to its ``params``, ``lr`` and
+            ``weight_decay`` entries.
+        """
         num_layers = args.out_feature_indexes[-1] + 1
-        backbone_key = "backbone.0.encoder"
+        backbone_key = f"{prefix}.encoder"
         named_param_lr_pairs = {}
         for n, p in self.named_parameters():
             n = prefix + "." + n
