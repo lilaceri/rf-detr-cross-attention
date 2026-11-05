@@ -16,7 +16,8 @@ As an AI agent contributing to RF-DETR, you are responsible for:
 
 1. **Following test-driven development practices**
 
-    - Follow the strict RED → GREEN → REFACTOR workflow below for every new feature and bug fix
+    - Write failing tests first for bug fixes
+    - Write comprehensive tests for new features
     - Ensure final PR commit has all tests passing
 
 2. **Adhering to code quality standards**
@@ -99,12 +100,6 @@ uv run --no-sync pytest src/ tests/ scripts/ -n 1 -m "not gpu" --ignore=tests/ru
 # GPU tests (requires GPU; mirrors CI)
 uv run --no-sync pytest tests/ -m gpu --ignore=tests/legacy/test_checkpoint_compat.py -n 2 --reruns 1 --only-rerun "OutOfMemoryError" --cov=rfdetr --cov-report=xml --timeout=600 --durations=20
 
-# Run a single test by pytest node ID (substitute the actual path and name)
-uv run --no-sync pytest 'tests/path/test_module.py::test_case'
-
-# Type-check with the same mypy hook used by the project
-pre-commit run mypy --all-files
-
 # Pre-commit checks (ALWAYS run before committing)
 pre-commit run --all-files
 ```
@@ -119,23 +114,10 @@ pre-commit run --all-files
 > - ✅ **Before opening PR:** Final commit MUST have all tests passing
 > - ✅ **Before each commit:** Run `pre-commit run --all-files`
 
-### Strict Test-Driven Development
+**Test-Driven Development:**
 
-1. **RED.** Before writing implementation code for any feature or bug fix, write a focused pytest test that specifies the expected behaviour or reproduces the bug. Run the test by node ID and confirm it fails for the expected reason. A collection error or an unrelated dependency or device failure does not satisfy RED.
-2. **GREEN.** Make the smallest implementation change that satisfies the test. Rerun the focused test and the affected tests.
-3. **REFACTOR.** Clean up the implementation while preserving behaviour. Rerun the affected tests after each refactor, then run the CPU suite and any applicable GPU tests before opening the PR.
-
-**Python data science tests**
-
-- Use small, deterministic fixtures such as synthetic images, annotations, or tensors. Prefer CPU tests when the behaviour is device-independent. Control randomness locally and use explicit, justified tolerances for floating-point comparisons.
-- Assert the behaviour that matters to callers. For data loading and transforms, check image–annotation alignment, shapes, dtypes, and relevant edge cases such as empty annotations. For model changes, use tiny forward or backward passes to check output contracts, finite losses, or gradient flow as appropriate.
-- When changing data splitting or evaluation, test for leakage and verify metrics on inputs with known expected results. Keep full training runs and benchmarks separate from the fast test that proves the change.
-
-**Forbidden actions**
-
-- Never write implementation code before running the new test and confirming it fails for the expected reason.
-- Never weaken or rewrite existing assertions just to make broken code pass.
-- Never skip, mark as expected to fail, or delete a failing test to bypass a failure.
+1. **Bug fixes:** Write failing test → Fix code → Verify all tests pass
+2. **New features:** Write comprehensive tests → Implement feature → Refactor
 
 **Test Organization:**
 
@@ -190,19 +172,6 @@ pre-commit run --all-files
 ```
 
 ## Documentation
-
-### Documentation Required for Each Change
-
-Keep documentation in the same PR as the change. A reviewer should be able to understand what changed, why it changed, how to use it, and how to reproduce any reported result from the repository records.
-
-| Record | When to update it | What to include |
-| --- | --- | --- |
-| Changelog | Any user-visible change to behaviour, APIs, configuration, dependencies, or compatibility | Add an entry under `[Unreleased]` in `CHANGELOG.md` using the existing categories. Describe the user impact and any migration or compatibility implications. |
-| Decision log | A material choice about architecture, data preparation, dataset splits, model design, evaluation, or deployment | Add or update a dated record under `docs/decisions/`. Include the context, options considered, rationale, trade-offs, consequences, and status. Link to the PR and supporting experiments. Link superseded decisions to their replacements. |
-| Experiment log | A run used to evaluate a hypothesis or support a claim about model quality, data processing, or performance | Add or update a dated record under `docs/experiments/`. Include the hypothesis, baseline, code revision, dataset version and split, preprocessing, configuration and seeds, environment and hardware, exact run and evaluation commands, metrics and results, and conclusions with limitations. Record failed and inconclusive runs that affect the decision. Link to any supporting artifacts. |
-| User and technical docs | A change to how someone configures, runs, extends, or maintains the project | Update the relevant README, guide, examples, or API docs. Cover prerequisites, inputs and outputs, defaults, and migration steps where applicable. Keep docstrings and type hints aligned with the implementation. |
-
-Use versioned dataset and artifact references for reproducibility. Keep credentials, sensitive samples, and large run artifacts out of Git. Before opening a PR, check that commands and links are current and list the documentation records updated in the PR description. If a record does not apply, briefly explain why.
 
 ### Building Docs
 
@@ -395,9 +364,10 @@ result = subprocess.run(
     - Follow existing patterns and conventions
     - Add type hints and docstrings
 4. **Testing:**
-    - Features and bug fixes: Follow the strict RED → GREEN → REFACTOR workflow above
+    - Bug fixes: Write test first, then fix
+    - Features: Test all major use cases
     - Run: `uv run --no-sync pytest src/ tests/ scripts/ -n 2 -m "not gpu" --ignore=tests/run_smoke_all_models.py --ignore=tests/legacy/test_checkpoint_compat.py --timeout=240 --durations=50`
-5. **Quality checks:** Complete the applicable documentation records above and run `pre-commit run --all-files`
+5. **Quality checks:** `pre-commit run --all-files`
 6. **Build (if needed):** `uv build`
 7. **Commit:** Pre-commit hooks run automatically
 
