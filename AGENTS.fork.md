@@ -122,3 +122,14 @@ Tests that download pretrained weights or the DINOv2 snapshot fail in such sessi
 - `tests/training/test_fused_adamw_ema_routing.py::TestFusedAdamWEMARouting::test_combined_checkpoint_keeps_fp32_ddp_destination_unfused` and `tests/export/tensorrt/test_tensorrt_export.py::TestPortableEngines::test_the_lean_runtime_is_not_probed_unless_version_compatible_is_asked_for[ampere_plus]`: the PyPI CUDA build of PyTorch on a machine without an NVIDIA driver.
 
 Use `--timeout=1800` for those three files. Any failure outside this list needs investigating.
+
+**Disk and memory in cloud sessions.** The session has about 15 GB of RAM and a fixed disk allowance.
+
+- pytest keeps the temporary directories of its last few runs under `/tmp/pytest-of-root`; after four full runs they held 17 GB and the next run failed with `No space left on device`. Pass `-o tmp_path_retention_policy=failed` so only failed tests keep theirs, and delete `/tmp/pytest-of-root` when no test run is active.
+- At `-n 4`, the out-of-memory killer occasionally kills a worker in `tests/training/test_resume_optimizer_settings.py`, reported as `worker 'gwN' crashed`. Check `dmesg | grep "Killed process"`, then rerun that test alone by node ID; it passes. Do not run mypy or a second test run alongside the suite.
+
+Full CPU suite as run in cloud sessions (about 43 minutes):
+
+```bash
+uv run --no-sync pytest src/ tests/ scripts/ -n 4 -m "not gpu" --ignore=tests/run_smoke_all_models.py --ignore=tests/legacy/test_checkpoint_compat.py --timeout=1800 -o tmp_path_retention_policy=failed
+```
