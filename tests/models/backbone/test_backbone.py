@@ -7,6 +7,8 @@
 
 from __future__ import annotations
 
+from argparse import Namespace
+from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
@@ -238,3 +240,78 @@ class TestBackboneLevelMask:
         unflagged_twin = NestedTensor(nested.tensors, nested.mask, False)
         feat = torch.rand(2, 8, 20, 20)
         assert torch.equal(Backbone._level_mask(nested, feat), Backbone._level_mask(unflagged_twin, feat))
+
+
+def _toy_backbone() -> Backbone:
+    """Build a ``Backbone`` whose encoder and projector are tiny modules named like the DINOv2 layout.
+
+    ``Backbone.__init__`` builds a real DINOv2 encoder, so the instance is created without it and given modules whose
+    parameter names exercise the embedding, per-layer and norm branches of the learning-rate and weight-decay rules.
+
+    Examples:
+        >>> sorted(name for name, _ in _toy_backbone().named_parameters())[:2]
+        ['encoder.embeddings.weight', 'encoder.encoder.layer.0.bias']
+    """
+    backbone = object.__new__(Backbone)
+    nn.Module.__init__(backbone)
+    backbone.encoder = nn.ModuleDict(
+        {
+            "embeddings": nn.Linear(2, 2, bias=False),
+            "encoder": nn.ModuleDict({"layer": nn.ModuleList([nn.Linear(2, 2), nn.Linear(2, 2)])}),
+            "layernorm": nn.LayerNorm(2),
+        }
+    )
+    backbone.projector = nn.Linear(2, 2)
+    return backbone
+
+
+def _lr_args() -> Namespace:
+    """Learning-rate settings with every factor different from 1, so each rule changes the result.
+
+    Examples:
+        >>> _lr_args().out_feature_indexes
+        [1]
+    """
+    return Namespace(
+        out_feature_indexes=[1],
+        lr_encoder=1e-4,
+        lr_vit_layer_decay=0.8,
+        lr_component_decay=0.7,
+        weight_decay=1e-4,
+    )
+
+
+def _lr_settings(pairs: dict[str, dict[str, Any]], prefix: str) -> dict[str, tuple[float, float]]:
+    """Map each parameter name, without *prefix*, to its learning rate and weight decay.
+
+    Examples:
+        >>> _lr_settings({"backbone.1.encoder.w": {"params": None, "lr": 0.1, "weight_decay": 0.0}}, "backbone.1")
+        {'.encoder.w': (0.1, 0.0)}
+    """
+    return {name.removeprefix(prefix): (pair["lr"], pair["weight_decay"]) for name, pair in pairs.items()}
+
+
+class TestGetNamedParamLrPairs:
+    """``Backbone.get_named_param_lr_pairs`` covers the encoder under whatever ``prefix`` the caller names.
+
+    The prefix is the backbone's own path in the model (``backbone.0`` for the single backbone of ``LWDETR``); a model
+    that holds a backbone under another path must still get the encoder learning rate and decay for it.
+    """
+
+    @pytest.mark.parametrize("prefix", ["backbone.0", "backbone.1"])
+    def test_returns_every_trainable_encoder_parameter_under_the_prefix(self, prefix: str) -> None:
+        backbone = _toy_backbone()
+
+        pairs = backbone.get_named_param_lr_pairs(_lr_args(), prefix=prefix)
+
+        expected = {f"{prefix}.{name}" for name, _ in backbone.named_parameters() if name.startswith("encoder.")}
+        assert set(pairs) == expected
+
+    def test_learning_rate_and_weight_decay_do_not_depend_on_the_prefix(self) -> None:
+        backbone = _toy_backbone()
+        args = _lr_args()
+
+        default = backbone.get_named_param_lr_pairs(args, prefix="backbone.0")
+        other = backbone.get_named_param_lr_pairs(args, prefix="backbone.1")
+
+        assert _lr_settings(other, "backbone.1") == _lr_settings(default, "backbone.0")
