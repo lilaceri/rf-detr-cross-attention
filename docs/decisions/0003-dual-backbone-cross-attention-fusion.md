@@ -24,8 +24,8 @@ For the merge before the decoder:
 Option 3 with the `concat` merge as the default and `levels` as a fallback:
 
 - Backbone A (thermal) and backbone B (RGB), each a Nano backbone with its own weights.
-- `BiCrossAttentionFusion` with 2 layers: each sensor attends to the other, both directions from the same layer input, with sensor embeddings, plain `nn.MultiheadAttention` (8 heads) and a feed-forward layer.
-- Gates on the cross-attention outputs start at 0, and the merge convolution starts as `[I | 0]`, so the initial model equals the thermal detector.
+- `BiCrossAttentionFusion` with 2 layers: each sensor attends to the other, both directions from the same layer input, with a separate `nn.MultiheadAttention` (8 heads) per direction and a feed-forward block per sensor. No sensor embeddings (see the update below).
+- Every residual branch (cross-attention and feed-forward) is pre-normalized and scaled by a per-channel gate that starts at 0, and the merge convolution starts as `[I | 0]`, so the initial model equals the thermal detector.
 - A per-sample sensor-present flag and a learned missing-sensor embedding; cross-attention from a missing sensor is zeroed rather than fully masked, because `nn.MultiheadAttention` returns NaNs when every key is masked.
 - The fusion sits in a `DualJoiner` that returns the same outputs as `Joiner`, so the transformer, heads, loss and matcher are unchanged.
 
@@ -40,3 +40,9 @@ Option 3 with the `concat` merge as the default and `levels` as a fallback:
 
 - To validate in the ablations of plan phase 7: `fusion_layers=0`, one- vs bi-directional attention, `concat` vs `levels`, shared vs separate backbones, and each sensor blanked. Record the results in `docs/experiments/` and update this record's status.
 - `Backbone.get_named_param_lr_pairs` hard-codes the `backbone.0.encoder` prefix; it must take the prefix as an argument so the second encoder gets the encoder learning rate. That fix is a candidate for upstream.
+
+## Update 2026-11-18: no sensor embeddings
+
+The first version of this record added a learned sensor embedding to each sensor's tokens so attention could tell the sensors apart. The implementation in `src/rfdetr/models/fusion.py` (PR adding `BiCrossAttentionFusion`) uses a separate attention module for each direction instead: thermal-from-RGB and RGB-from-thermal have their own query, key and value projections, so each already knows which sensor it reads. A sensor embedding would add parameters without adding information, so it was left out. If one shared attention module is ever used for both directions, sensor embeddings become necessary again.
+
+The gates are per-channel vectors (LayerScale-style) on both the cross-attention and the feed-forward branches, rather than one scalar per direction, so that the whole layer, not only the attention, starts as the identity.
