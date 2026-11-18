@@ -48,6 +48,8 @@ class _BiCrossAttentionLayer(nn.Module):
         pos_b: Tensor,
         mask_a: Tensor | None,
         mask_b: Tensor | None,
+        present_a: Tensor,
+        present_b: Tensor,
     ) -> tuple[Tensor, Tensor]:
         """Update both token sequences from each other.
 
@@ -58,6 +60,8 @@ class _BiCrossAttentionLayer(nn.Module):
             pos_b: Positional embeddings for ``tokens_b``.
             mask_a: Padding mask for sensor A, ``(batch, tokens_a)``, ``True`` where padded, or ``None``.
             mask_b: Padding mask for sensor B, ``(batch, tokens_b)``, ``True`` where padded, or ``None``.
+            present_a: ``(batch,)`` booleans, ``False`` where sensor A is missing; sensor B gets no update from it.
+            present_b: ``(batch,)`` booleans, ``False`` where sensor B is missing; sensor A gets no update from it.
 
         Returns:
             The updated ``(tokens_a, tokens_b)``.
@@ -70,6 +74,9 @@ class _BiCrossAttentionLayer(nn.Module):
         from_a, _ = self.attn_b_from_a(
             normed_b + pos_b, normed_a + pos_a, normed_a, key_padding_mask=mask_a, need_weights=False
         )
+        # A sample gets no update from a sensor it lacks.
+        from_b = torch.where(present_b[:, None, None], from_b, 0.0)
+        from_a = torch.where(present_a[:, None, None], from_a, 0.0)
         tokens_a = tokens_a + self.attn_gate_a * from_b
         tokens_b = tokens_b + self.attn_gate_b * from_a
         tokens_a = tokens_a + self.ffn_gate_a * self.ffn_a(self.ffn_norm_a(tokens_a))
@@ -103,6 +110,10 @@ class BiCrossAttentionFusion(nn.Module):
     need not be pixel-aligned. Gates start at zero, so at initialization the block returns its inputs unchanged and
     two pretrained single-sensor branches behave as they did before fusion was added.
 
+    A sample may lack one of the sensors (``present_a`` / ``present_b``). The present sensor then gets no update from
+    the missing one, and the missing sensor's output map is a learned per-channel embedding, so code downstream always
+    receives two maps. The missing sensor's input values and padding are never read, so they may be anything.
+
     Args:
         d_model: Channels of both feature maps.
         num_heads: Attention heads per direction.
@@ -118,6 +129,8 @@ class BiCrossAttentionFusion(nn.Module):
         self.layers = nn.ModuleList(
             [_BiCrossAttentionLayer(d_model, num_heads, dim_feedforward, dropout) for _ in range(num_layers)]
         )
+        self.missing_embed_a = nn.Parameter(torch.zeros(d_model))
+        self.missing_embed_b = nn.Parameter(torch.zeros(d_model))
 
     def forward(
         self,
@@ -127,6 +140,8 @@ class BiCrossAttentionFusion(nn.Module):
         pos_b: Tensor,
         mask_a: Tensor | None = None,
         mask_b: Tensor | None = None,
+        present_a: Tensor | None = None,
+        present_b: Tensor | None = None,
     ) -> tuple[Tensor, Tensor]:
         """Fuse two feature maps.
 
@@ -137,17 +152,56 @@ class BiCrossAttentionFusion(nn.Module):
             pos_b: Positional embedding for ``src_b``, same shape.
             mask_a: Padding mask for sensor A, ``(batch, height_a, width_a)``, ``True`` where padded, or ``None``.
             mask_b: Padding mask for sensor B, ``(batch, height_b, width_b)``, ``True`` where padded, or ``None``.
+            present_a: ``(batch,)`` booleans, ``False`` where the sample has no sensor A image. ``None`` means every
+                sample has one.
+            present_b: ``(batch,)`` booleans, ``False`` where the sample has no sensor B image. ``None`` means every
+                sample has one.
 
         Returns:
-            The fused ``(src_a, src_b)`` maps, each with its input's shape.
+            The fused ``(src_a, src_b)`` maps, each with its input's shape. Where a sensor is missing, its map is that
+            sensor's missing embedding at every location.
+
+        Raises:
+            ValueError: If a sample has neither sensor.
         """
-        tokens_a, tokens_b = _tokens(src_a), _tokens(src_b)
+        present_a = _presence(present_a, src_a)
+        present_b = _presence(present_b, src_b)
+        if not bool((present_a | present_b).all()):
+            raise ValueError("Every sample needs at least one sensor; a sample has neither sensor present.")
+        # A missing sensor's tokens and padding are replaced before attention, so its input is never read. Non-finite
+        # values there would otherwise reach the attention weights' gradients, and older PyTorch versions return NaN
+        # for a sample whose keys are all padding.
+        tokens_a = torch.where(present_a[:, None, None], _tokens(src_a), self.missing_embed_a)
+        tokens_b = torch.where(present_b[:, None, None], _tokens(src_b), self.missing_embed_b)
         flat_pos_a, flat_pos_b = _tokens(pos_a), _tokens(pos_b)
-        flat_mask_a = mask_a.flatten(1) if mask_a is not None else None
-        flat_mask_b = mask_b.flatten(1) if mask_b is not None else None
+        flat_mask_a = mask_a.flatten(1) & present_a[:, None] if mask_a is not None else None
+        flat_mask_b = mask_b.flatten(1) & present_b[:, None] if mask_b is not None else None
         for layer in self.layers:
-            tokens_a, tokens_b = layer(tokens_a, tokens_b, flat_pos_a, flat_pos_b, flat_mask_a, flat_mask_b)
+            tokens_a, tokens_b = layer(
+                tokens_a, tokens_b, flat_pos_a, flat_pos_b, flat_mask_a, flat_mask_b, present_a, present_b
+            )
+        tokens_a = torch.where(present_a[:, None, None], tokens_a, self.missing_embed_a)
+        tokens_b = torch.where(present_b[:, None, None], tokens_b, self.missing_embed_b)
         return tokens_a.transpose(1, 2).reshape(src_a.shape), tokens_b.transpose(1, 2).reshape(src_b.shape)
+
+
+def _presence(present: Tensor | None, feature_map: Tensor) -> Tensor:
+    """Return the per-sample presence flags, all ``True`` when *present* is ``None``.
+
+    Args:
+        present: ``(batch,)`` booleans, or ``None``.
+        feature_map: The sensor's ``(batch, ...)`` map, which gives the batch size and device.
+
+    Returns:
+        ``(batch,)`` booleans on the map's device.
+
+    Examples:
+        >>> _presence(None, torch.zeros(2, 8, 3, 4)).tolist()
+        [True, True]
+    """
+    if present is None:
+        return torch.ones(feature_map.shape[0], dtype=torch.bool, device=feature_map.device)
+    return present.to(device=feature_map.device, dtype=torch.bool)
 
 
 def _tokens(feature_map: Tensor) -> Tensor:

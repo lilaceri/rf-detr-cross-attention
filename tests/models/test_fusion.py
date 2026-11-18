@@ -113,3 +113,116 @@ class TestBiCrossAttentionFusion:
 
         # Same computation on the unmasked keys; only floating-point summation order may differ.
         torch.testing.assert_close(out_a_changed, out_a, rtol=1e-5, atol=1e-6)
+
+
+def _missing(sensor: str, batch_size: int = 2) -> dict[str, torch.Tensor]:
+    """Return ``present_a``/``present_b`` keyword arguments where *sensor* is missing for sample 0 only.
+
+    Examples:
+        >>> _missing("b")["present_b"].tolist()
+        [False, True]
+    """
+    present = torch.ones(batch_size, dtype=torch.bool)
+    absent = present.clone()
+    absent[0] = False
+    return {"present_a": absent if sensor == "a" else present, "present_b": absent if sensor == "b" else present}
+
+
+def _pick(outputs: tuple[torch.Tensor, torch.Tensor], sensor: str) -> torch.Tensor:
+    """Return the output map of *sensor* (``"a"`` or ``"b"``) from a fusion result.
+
+    Examples:
+        >>> _pick((torch.zeros(1), torch.ones(1)), "b").item()
+        1.0
+    """
+    return outputs[0] if sensor == "a" else outputs[1]
+
+
+class TestMissingSensor:
+    """A sample may lack one sensor; the other is then fused from nothing and the missing map is a learned embedding."""
+
+    @pytest.mark.parametrize("missing", ["a", "b"])
+    def test_present_sensor_ignores_the_missing_sensors_content(self, missing: str) -> None:
+        fusion = _open_gates(_fusion())
+        src_a, pos_a = _maps(0)
+        src_b, pos_b = _maps(1)
+        present = "b" if missing == "a" else "a"
+        garbage_a = src_a.clone()
+        garbage_b = src_b.clone()
+        (garbage_a if missing == "a" else garbage_b)[0] = float("nan")
+
+        reference = _pick(fusion(src_a, src_b, pos_a, pos_b, **_missing(missing)), present)
+        result = _pick(fusion(garbage_a, garbage_b, pos_a, pos_b, **_missing(missing)), present)
+
+        assert torch.equal(result[0], reference[0])
+
+    @pytest.mark.parametrize("missing", ["a", "b"])
+    def test_missing_sensor_output_is_its_learned_embedding(self, missing: str) -> None:
+        fusion = _open_gates(_fusion())
+        with torch.no_grad():
+            embedding = getattr(fusion, f"missing_embed_{missing}")
+            embedding.copy_(torch.arange(_D_MODEL, dtype=torch.float32))
+        src_a, pos_a = _maps(0)
+        src_b, pos_b = _maps(1)
+
+        result = _pick(fusion(src_a, src_b, pos_a, pos_b, **_missing(missing)), missing)
+
+        assert torch.equal(result[0], embedding[:, None, None].expand(_D_MODEL, 3, 4))
+
+    @pytest.mark.parametrize("missing", ["a", "b"])
+    def test_fully_padded_missing_sensor_gives_finite_outputs_and_gradients(self, missing: str) -> None:
+        fusion = _open_gates(_fusion()).train()
+        src_a, pos_a = _maps(0)
+        src_b, pos_b = _maps(1)
+        mask = torch.zeros(2, 3, 4, dtype=torch.bool)
+        mask[0] = True  # the missing sensor's map is all padding for sample 0
+        masks = {"mask_a": mask} if missing == "a" else {"mask_b": mask}
+
+        out_a, out_b = fusion(src_a, src_b, pos_a, pos_b, **masks, **_missing(missing))
+        (out_a.sum() + out_b.sum()).backward()
+
+        grads = [p.grad for p in fusion.parameters() if p.grad is not None]
+        assert torch.isfinite(out_a).all() and torch.isfinite(out_b).all()
+        assert grads and all(torch.isfinite(grad).all() for grad in grads)
+
+    @pytest.mark.parametrize("missing", ["a", "b"])
+    def test_missing_sensors_content_does_not_reach_the_gradients(self, missing: str) -> None:
+        fusion = _open_gates(_fusion()).train()
+        src_a, pos_a = _maps(0)
+        src_b, pos_b = _maps(1)
+        (src_a if missing == "a" else src_b)[0] = float("nan")
+
+        out_a, out_b = fusion(src_a, src_b, pos_a, pos_b, **_missing(missing))
+        (out_a.sum() + out_b.sum()).backward()
+
+        grads = [p.grad for p in fusion.parameters() if p.grad is not None]
+        assert grads and all(torch.isfinite(grad).all() for grad in grads)
+
+    @pytest.mark.parametrize("missing", ["a", "b"])
+    def test_samples_with_both_sensors_are_unaffected_by_another_samples_missing_sensor(self, missing: str) -> None:
+        fusion = _open_gates(_fusion())
+        src_a, pos_a = _maps(0)
+        src_b, pos_b = _maps(1)
+
+        all_present = fusion(src_a, src_b, pos_a, pos_b)
+        one_missing = fusion(src_a, src_b, pos_a, pos_b, **_missing(missing))
+
+        assert torch.equal(one_missing[0][1], all_present[0][1]) and torch.equal(one_missing[1][1], all_present[1][1])
+
+    def test_missing_embedding_receives_gradient(self) -> None:
+        fusion = _fusion().train()
+        src_a, pos_a = _maps(0)
+        src_b, pos_b = _maps(1)
+
+        _, out_b = fusion(src_a, src_b, pos_a, pos_b, **_missing("b"))
+        out_b.sum().backward()
+
+        assert fusion.missing_embed_b.grad is not None and fusion.missing_embed_b.grad.abs().sum() > 0
+
+    def test_rejects_a_sample_with_neither_sensor(self) -> None:
+        src_a, pos_a = _maps(0)
+        src_b, pos_b = _maps(1)
+        absent = torch.tensor([False, True])
+
+        with pytest.raises(ValueError, match="neither sensor"):
+            _fusion()(src_a, src_b, pos_a, pos_b, present_a=absent, present_b=absent)
